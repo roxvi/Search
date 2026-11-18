@@ -57,7 +57,7 @@ in [ROADMAP.md](ROADMAP.md).
 - A two-finger scroll sideways in Google Sheets, or over anything else on a page that scrolls sideways, scrolls it instead of going back or forward a page, as in Safari. A swipe means Back or Forward only when nothing under the pointer can go further that way and it was already resting at its edge when the fingers set off: a box carried to its edge by the same swipe, or by its glide, is not a swipe, and neither is a quick flick across a busy page's grid, which used to go before the page had said the scroll was its own. A page with nothing to scroll sideways swipes as before. ([#1219](https://github.com/driceroland/Search/issues/1219), [#1184](https://github.com/driceroland/Search/issues/1184)) `python3 Tests/swipe_scrollers.py`
 ### Improved
 
-- The miniplayer keeps the pointer attached through two-finger moves and corner glides until you move it with one finger. It lifts slightly while swiping and settles back when you let go; pinch gestures resize it about the pointer, including small pinches, within the current display.
+- The miniplayer keeps the pointer attached through two-finger moves and corner glides until you move it with one finger. The cursor and controls stay hidden until you move the pointer again. Small swipes allow precise positioning even with corner flicks on. It lifts slightly while swiping and settles back when you let go; pinch gestures resize it about the pointer, including small pinches, within the current display.
 
 ### Held back
 
