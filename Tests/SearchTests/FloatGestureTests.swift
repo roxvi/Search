@@ -26,6 +26,7 @@ final class FloatGestureTests: XCTestCase {
         let panel = NSPanel(contentRect: NSRect(x: -20000, y: -20000, width: 440, height: 247),
                             styleMask: [.borderless], backing: .buffered, defer: false)
         panel.isReleasedWhenClosed = false
+        panel.hasShadow = false
         panel.minSize = NSSize(width: 260, height: 146)
         let controls = Float.Controls(frame: NSRect(origin: .zero, size: panel.frame.size))
         panel.contentView = controls
@@ -40,20 +41,21 @@ final class FloatGestureTests: XCTestCase {
         try body(controls, panel)
     }
 
-    func testSwipeLiftsMovesAndRestoresSizeWithoutTakingBenchPointer() throws {
-        try withControls { controls, panel in
-            try XCTSkipIf(Motion.reduced)
+    func testSwipeMovesWithoutResizingOrAddingShadow() {
+        withControls { controls, panel in
             let original = panel.frame
             let event = Gesture()
             event.gesturePhase = .began
             controls.scrollWheel(with: event)
-            XCTAssertEqual(panel.frame.width, original.width * 1.03, accuracy: 1)
-            XCTAssertTrue(panel.hasShadow)
+            XCTAssertEqual(panel.frame, original)
+            XCTAssertFalse(panel.hasShadow)
             XCTAssertNil(controls.pointerAnchor)
             event.gesturePhase = .changed
             event.dx = 80
             event.dy = -40
             controls.scrollWheel(with: event)
+            XCTAssertEqual(panel.frame.size, original.size)
+            XCTAssertFalse(panel.hasShadow)
             event.gesturePhase = .ended
             event.dx = 0
             event.dy = 0
@@ -66,7 +68,7 @@ final class FloatGestureTests: XCTestCase {
         }
     }
 
-    func testPointerRemainsAttachedAfterSwipeAndReleasesOnOneFingerMovement() throws {
+    func testSwipeReleasesPointerAndKeepsControlsHiddenUntilMovement() throws {
         try withControls { controls, panel in
             // An unshown window around the pointer exercises attachment without
             // moving the user's real cursor or displaying anything.
@@ -83,7 +85,9 @@ final class FloatGestureTests: XCTestCase {
             XCTAssertFalse(controls.isNear, "warping into the picture must not reveal controls")
             event.gesturePhase = .ended
             controls.scrollWheel(with: event)
-            XCTAssertNotNil(controls.pointerAnchor, "lifting two fingers keeps the pointer attached")
+            XCTAssertNil(controls.pointerAnchor)
+            XCTAssertTrue(controls.gestureQuiet)
+            XCTAssertFalse(controls.isNear)
             let move = try XCTUnwrap(NSEvent.mouseEvent(with: .mouseMoved, location: .zero,
                 modifierFlags: [], timestamp: 0, windowNumber: panel.windowNumber,
                 context: nil, eventNumber: 0, clickCount: 0, pressure: 0))
@@ -94,34 +98,50 @@ final class FloatGestureTests: XCTestCase {
         }
     }
 
-    func testReducedMotionSkipsTemporaryEnlargement() {
-        let old = Motion.testReduceMotion
-        Motion.testReduceMotion = true
-        defer { Motion.testReduceMotion = old }
+    func testCornerFlickReleasesPointerEvenIfGlideHasAlreadyStarted() {
         withControls { controls, panel in
-            let frame = panel.frame
+            Float.benchAway = nil
+            Float.flicks = true
+            let mouse = NSEvent.mouseLocation
+            panel.setFrameOrigin(NSPoint(x: mouse.x - 100, y: mouse.y - 100))
+            Float.benchScreens = [panel.frame.insetBy(dx: -500, dy: -500)]
+            let original = panel.frame
             let event = Gesture()
             event.gesturePhase = .began
             controls.scrollWheel(with: event)
-            XCTAssertEqual(panel.frame, frame)
+            XCTAssertNotNil(controls.pointerAnchor)
+            event.gesturePhase = .changed
+            event.dx = 130
+            controls.scrollWheel(with: event)
+            XCTAssertEqual(panel.frame, original)
+            XCTAssertNotNil(controls.pointerAnchor)
+            event.gesturePhase = .ended
+            event.dx = 0
+            controls.scrollWheel(with: event)
+            XCTAssertNil(controls.pointerAnchor)
+            XCTAssertTrue(controls.gestureQuiet)
         }
     }
 
-    func testCancellationAndTeardownRestoreLift() {
+    func testCancellationAndTeardownReleasePointer() {
         withControls { controls, panel in
-            let original = panel.frame.size
+            Float.benchAway = nil
+            let mouse = NSEvent.mouseLocation
+            panel.setFrameOrigin(NSPoint(x: mouse.x - 100, y: mouse.y - 100))
             let event = Gesture()
             event.gesturePhase = .began
             controls.scrollWheel(with: event)
+            XCTAssertNotNil(controls.pointerAnchor)
             event.gesturePhase = .cancelled
             controls.scrollWheel(with: event)
-            XCTAssertEqual(panel.frame.size, original)
             XCTAssertNil(controls.pointerAnchor)
+            XCTAssertFalse(controls.gestureQuiet)
             event.gesturePhase = .began
             controls.scrollWheel(with: event)
+            XCTAssertNotNil(controls.pointerAnchor)
             controls.finishInteraction()
-            XCTAssertEqual(panel.frame.size, original)
-            XCTAssertFalse(panel.hasShadow)
+            XCTAssertNil(controls.pointerAnchor)
+            XCTAssertFalse(controls.gestureQuiet)
         }
     }
 
@@ -154,6 +174,8 @@ final class FloatGestureTests: XCTestCase {
             event.dx = 3
             event.dy = -2
             controls.scrollWheel(with: event)
+            XCTAssertEqual(panel.frame.size, original.size)
+            XCTAssertFalse(panel.hasShadow)
             event.gesturePhase = .ended
             event.dx = 0
             event.dy = 0
@@ -167,15 +189,21 @@ final class FloatGestureTests: XCTestCase {
         }
     }
 
-    func testFinePinchRespondsWhileFingersAreDown() {
+    func testPinchBatchesResizesUntilAccumulatedDeltaExceedsTwoPercent() {
         withControls { controls, panel in
             let event = Gesture()
             event.gesturePhase = .began
-            event.pinch = 0.005
+            event.pinch = 0.01
             controls.magnify(with: event)
-            XCTAssertEqual(panel.frame.width, 442.2, accuracy: 1)
+            XCTAssertEqual(panel.frame.width, 440)
             XCTAssertTrue(controls.gestureQuiet)
             XCTAssertFalse(controls.isNear)
+            event.gesturePhase = .changed
+            controls.magnify(with: event)
+            XCTAssertEqual(panel.frame.width, 440)
+            event.pinch = 0.005
+            controls.magnify(with: event)
+            XCTAssertEqual(panel.frame.width, 451, accuracy: 1)
             event.gesturePhase = .cancelled
             controls.magnify(with: event)
             XCTAssertFalse(controls.gestureQuiet)
@@ -186,13 +214,13 @@ final class FloatGestureTests: XCTestCase {
         withControls { controls, panel in
             let event = Gesture()
             event.gesturePhase = .began
-            event.pinch = 0.0019
+            event.pinch = 0.005
             controls.magnify(with: event)
             XCTAssertEqual(panel.frame.width, 440)
             event.gesturePhase = .ended
             event.pinch = 0
             controls.magnify(with: event)
-            XCTAssertEqual(panel.frame.width, 440.836, accuracy: 1)
+            XCTAssertEqual(panel.frame.width, 442.2, accuracy: 1)
             event.gesturePhase = .began
             event.pinch = -0.1
             controls.magnify(with: event)

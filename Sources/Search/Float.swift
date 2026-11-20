@@ -551,12 +551,10 @@ final class Float {
             resize(to: origin.width + dx, from: origin)
         }
 
-        // Keep a position within the picture, rather than a screen position:
-        // a corner glide can cross most of the display after fingers lift.
+        // Keep the pointer at the same position within the picture while fingers are down.
         private(set) var pointerAnchor: NSPoint?
         private(set) var gestureQuiet = false
         private var cursorHidden = false
-        private var liftedSize: NSSize?
         private var movement: [NSObjectProtocol] = []
         private var pointerMonitor: Any?
 
@@ -584,12 +582,16 @@ final class Float {
 
         override func mouseMoved(with event: NSEvent) { releasePointer() }
 
-        private func releasePointer() {
+        private func stopCarryingPointer() {
             pointerAnchor = nil
             if cursorHidden {
                 NSCursor.unhide()
                 cursorHidden = false
             }
+        }
+
+        private func releasePointer() {
+            stopCarryingPointer()
             guard gestureQuiet else { return }
             gestureQuiet = false
             if let window, window.frame.contains(NSEvent.mouseLocation) {
@@ -628,44 +630,21 @@ final class Float {
             CGAssociateMouseAndMouseCursorPosition(1)
         }
 
-        private func liftPicture() {
-            guard liftedSize == nil, docked == nil, let window,
-                  !Motion.reduced else { return }
-            liftedSize = window.frame.size
-            let frame = window.frame
-            window.setFrame(frame.insetBy(dx: -frame.width * 0.015, dy: -frame.height * 0.015), display: false)
-            window.hasShadow = true
-        }
-
-        private func lowerPicture() {
-            guard let size = liftedSize, let window else { return }
-            liftedSize = nil
-            let frame = window.frame
-            window.setFrame(NSRect(x: frame.midX - size.width / 2, y: frame.midY - size.height / 2,
-                                   width: size.width, height: size.height), display: false)
-            window.hasShadow = false
-        }
-
         func finishInteraction() {
             releasePointer()
-            lowerPicture()
             stopGlide()
             settling?.cancel()
             settling = nil
         }
 
-        /// Two fingers move the picture and keep the pointer attached until
-        /// a physical pointer movement (one finger on a trackpad) releases it.
+        /// Two fingers move the picture and carry the pointer until they lift.
         override func scrollWheel(with event: NSEvent) {
             guard let window, event.momentumPhase == [] else { return }
-            let ended = event.phase.contains(.ended) || event.phase.contains(.cancelled)
             if event.phase.contains(.began) {
                 attachPointer()
                 quietGesture()
-                if !Float.flicks { liftPicture() }
             }
-            // Restore the real size before picking a corner or docking target.
-            if ended { lowerPicture() }
+            if event.phase.contains(.ended) { stopCarryingPointer() }
             if event.phase.contains(.cancelled) {
                 releasePointer()
                 if pulling != nil { glide(to: pullFrom, bouncing: true) }
@@ -716,18 +695,15 @@ final class Float {
                 return
             }
             if event.phase.contains(.began) {
-                // Corner and docking geometry uses the resting origin.
-                lowerPicture()
                 stopGlide()
                 swipe = .zero
                 flicked = false
                 pulling = nil
                 pullFrom = window?.frame.origin ?? .zero
-                liftPicture()
             }
             swipe.dx += step.dx
             swipe.dy += step.dy
-            let lifted = event.phase.contains(.ended) || event.phase.contains(.cancelled)
+            let lifted = event.phase.contains(.ended)
 
             // Docked: a swipe back towards the middle brings it out.
             if docked != nil {
@@ -746,7 +722,6 @@ final class Float {
             // fingers, and on lifting either goes into the side — only a
             // sliver left — or springs back out.
             if pulling == nil, !flicked, let side = against(), outward(swipe, from: side), abs(swipe.dx) > 6 {
-                lowerPicture()
                 pulling = side
                 // A spring still settling from the last one would pull the
                 // other way, a frame at a time.
@@ -770,10 +745,7 @@ final class Float {
             let length = hypot(swipe.dx, swipe.dy)
             if !flicked, length <= 120, let window {
                 // Small swipes place it exactly; a deliberate flick still snaps.
-                let extraX = (window.frame.width - (liftedSize?.width ?? window.frame.width)) / 2
-                let extraY = (window.frame.height - (liftedSize?.height ?? window.frame.height)) / 2
-                window.setFrameOrigin(NSPoint(x: pullFrom.x + swipe.dx - extraX,
-                                              y: pullFrom.y + swipe.dy - extraY))
+                window.setFrameOrigin(NSPoint(x: pullFrom.x + swipe.dx, y: pullFrom.y + swipe.dy))
             }
             if !flicked, length > 120 || (lifted && length > 20) {
                 flicked = true
@@ -840,6 +812,7 @@ final class Float {
             settling?.cancel()
             settling = nil
             guard let side = pulling else { return }
+            stopCarryingPointer()
             if outward(swipe, from: side), abs(swipe.dx) >= Controls.dockAt {
                 dock(side, from: pullFrom)
             } else {
@@ -853,7 +826,6 @@ final class Float {
         private func dock(_ side: Side, from origin: NSPoint? = nil) {
             guard let window, let area else { return }
             releasePointer()
-            lowerPicture()
             dockedFrom = origin ?? window.frame.origin
             docked = side
             glide(to: Float.docked(window.frame, right: side == .right, in: area, sliver: Controls.sliver))
@@ -870,7 +842,6 @@ final class Float {
         /// To the corner the swipe points at, a margin in from the edges of
         /// the screen's usable part.
         private func flick(_ way: CGVector) {
-            lowerPicture()
             guard let window, let area else { return }
             let target = Float.corner(for: window.frame, in: area, toward: way)
             guard target != window.frame.origin else { return }
@@ -950,18 +921,19 @@ final class Float {
         override func magnify(with event: NSEvent) {
             guard let window else { return }
             if event.phase.contains(.began) {
-                lowerPicture()
                 stopGlide()
                 attachPointer()
                 quietGesture()
                 pinching = 0
             }
             if event.phase.contains(.cancelled) { pinching = 0; releasePointer(); return }
+            let ended = event.phase.contains(.ended)
+            if ended { stopCarryingPointer() }
             pinching += event.magnification
 
-            // Keep subpixel pinches until they add up to a visible adjustment.
-            // Flushing the remainder on release also preserves very small pinches.
-            guard abs(pinching) > 0.002 || (event.phase.contains(.ended) && pinching != 0) else { return }
+            // Batch window resizes so WebKit can keep up with the video refit.
+            // Flush anything left when the fingers lift.
+            guard abs(pinching) > 0.02 || (ended && pinching != 0) else { return }
             let by = pinching
             pinching = 0
             resize(
